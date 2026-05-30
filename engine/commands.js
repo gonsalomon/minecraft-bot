@@ -16,6 +16,10 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
 
   // ── DAG runner ───────────────────────────────────────────────
   let activeDAG = null
+  let survival  = null
+
+  function getActiveDAG() { return activeDAG }
+  function setSurvival(s) { survival = s }
 
   function makeDAG() {
     return new DAGEngine(bot, {
@@ -29,12 +33,21 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
     })
   }
 
-  async function runDAG(defs, label) {
+  async function runDAG(defs, label, taskType = 'general') {
+    // Preflight survival check
+    if (survival) {
+      const check = survival.preflightCheck(taskType)
+      if (!check.ok) {
+        sendMsg(`🚫 No puedo iniciar "${label}": ${check.reason}`)
+        return
+      }
+    }
     if (activeDAG) { activeDAG.abort(); activeDAG = null }
     stopAll()
     movement.clearPathfinding()
     activeDAG = makeDAG()
     flags.dagRunning = true
+    flags.lastCommand = label
     sendMsg(`🔁 ${label}`)
     try {
       const res = await activeDAG.run(defs)
@@ -105,6 +118,13 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
       case lower === 'data': {
         const f = l => l ? `${l.x} ${l.y} ${l.z}` : 'no'
         sendMsg(`📦 Cofre:${f(locations.chest)} | 📐 Mesa:${f(locations.craftingTable)} | ⛏️ Mina:${f(locations.mine)} | 🌾 Granja:${f(locations.farm)} | 🛏️ Cama:${f(locations.bed)}`)
+        break
+      }
+
+      case lower === 'supervivencia' || lower === 'estado': {
+        if (!survival) { sendMsg('❌ Módulo de supervivencia no activo'); break }
+        const s = survival.getStatus()
+        sendMsg(`🧬 Amenaza: ${s.label} | ❤️ ${Math.round(bot.health)}/20 | 🍗 ${Math.round(bot.food)}/20 | Modo supervivencia: ${s.inSurvivalMode ? 'SÍ' : 'no'}`)
         break
       }
 
@@ -181,17 +201,17 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
         runDAG([{
           id: 'mine', label: `Minar ${block}`, deps: [],
           fn: () => miningSkills.mineChunkForwardLoop(block),
-        }], `minar ${block}`)
+        }], `minar ${block}`, 'mining')
         break
       }
       // "minar chunk completo"
       case lower === 'minar chunk completo':
-        runDAG([{ id: 'mc', label: 'Chunk completo', deps: [], fn: () => miningSkills.mineChunkDescending(false) }], 'chunk completo')
+        runDAG([{ id: 'mc', label: 'Chunk completo', deps: [], fn: () => miningSkills.mineChunkDescending(false) }], 'chunk completo', 'mining')
         break
 
       // "minar chunk" (con confirmación por segmento)
       case lower === 'minar chunk':
-        runDAG([{ id: 'mc', label: 'Chunk segmentado', deps: [], fn: () => miningSkills.mineChunkDescending(true, askConfirm) }], 'chunk segmentado')
+        runDAG([{ id: 'mc', label: 'Chunk segmentado', deps: [], fn: () => miningSkills.mineChunkDescending(true, askConfirm) }], 'chunk segmentado', 'mining')
         break
 
       // "minar capa <Y>"
@@ -207,7 +227,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
             await miningSkills.mineTwoLayers(cx, cz, y - 1)
             flags.miningActive = false
           },
-        }], `capa ${y}`)
+        }], `capa ${y}`, 'mining')
         break
       }
 
@@ -215,7 +235,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
       case cmd === 'espiral' && parts.length === 2: {
         const y = parseInt(parts[1])
         if (isNaN(y)) { sendMsg('❌ Y inválida'); break }
-        runDAG([{ id: 'spiral', label: `Espiral Y=${y}`, deps: [], fn: () => miningSkills.spiralMining(y, askConfirm) }], `espiral ${y}`)
+        runDAG([{ id: 'spiral', label: `Espiral Y=${y}`, deps: [], fn: () => miningSkills.spiralMining(y, askConfirm) }], `espiral ${y}`, 'mining')
         break
       }
 
@@ -224,13 +244,13 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
         const y   = parseInt(parts[1])
         const dir = parts[2]
         if (isNaN(y) || !['x+','x-','z+','z-'].includes(dir)) { sendMsg('❌ Uso: linea <Y> x+|x-|z+|z-'); break }
-        runDAG([{ id: 'line', label: `Línea ${dir} Y=${y}`, deps: [], fn: () => miningSkills.lineMining(y, dir, askConfirm) }], `línea ${dir}`)
+        runDAG([{ id: 'line', label: `Línea ${dir} Y=${y}`, deps: [], fn: () => miningSkills.lineMining(y, dir, askConfirm) }], `línea ${dir}`, 'mining')
         break
       }
 
       case lower === 'retomar':
         if (!loadMiningProgress()) { sendMsg('❌ Sin progreso guardado'); break }
-        runDAG([{ id: 'retomar', label: 'Retomar minería', deps: [], fn: () => miningSkills.mineChunkForwardLoop(mining.target) }], 'retomar')
+        runDAG([{ id: 'retomar', label: 'Retomar minería', deps: [], fn: () => miningSkills.mineChunkForwardLoop(mining.target) }], 'retomar', 'mining')
         break
 
       // ── LUMBERJACK ───────────────────────────────────────────
@@ -240,7 +260,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
           { id: 'axe',  label: 'Asegurar hacha', deps: [],      fn: () => lumberjack.ensureAxe() },
           { id: 'cut',  label: `Cortar ${n} madera`, deps: ['axe'], fn: () => lumberjack.exploreCutUntil(n) },
           { id: 'dep',  label: 'Depositar',       deps: ['cut'], fn: () => inventory.depositInChest() },
-        ], `madera ×${n}`)
+        ], `madera ×${n}`, 'farming')
         break
       }
 
@@ -271,7 +291,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
           { id: 'hunt',   label: 'Cazar',    deps: ['eat','weapon','armor','shield'], fn: () => combat.huntLoop() },
           { id: 'loot',   label: 'Botín',    deps: ['hunt'],                  fn: () => inventory.pickupNearbyItems() },
           { id: 'dep',    label: 'Depositar',deps: ['loot'],                  fn: () => inventory.depositInChest() },
-        ], 'caza')
+        ], 'caza', 'combat')
         break
 
       // ── TRADING / VILLAGES ───────────────────────────────────
@@ -437,7 +457,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
     }
   }
 
-  return { handleCommand }
+  return { handleCommand, getActiveDAG, setSurvival }
 }
 
 module.exports = { createCommandHandler }

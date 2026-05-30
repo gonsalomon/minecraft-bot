@@ -12,6 +12,7 @@ const { createLumberjack }         = require('./skills/lumberjack')
 const { createCombat }             = require('./skills/combat')
 const { createFarming, createTrading } = require('./skills/farming_trading')
 const { createCommandHandler }     = require('./engine/commands')
+const { createSurvival }          = require('./core/survival')
 
 const BOT_USERNAME    = process.env.BOT_USERNAME    || 'Carlos'
 const SERVER_HOST     = process.env.SERVER_HOST     || 'localhost'
@@ -64,6 +65,11 @@ function createAndConnectBot() {
       lumberjack, combat, farming, trading,
       sendMsg, MASTER_USERNAME,
     })
+
+    // Survival needs a reference to the active DAG in commands
+    const survival = createSurvival(bot, movement, inventory, () => commandHandler.getActiveDAG(), sendMsg)
+    commandHandler.setSurvival(survival)
+    survival.start()
 
     movement.startDodgeSystem()
     sendMsg(`✅ ${BOT_USERNAME} listo. Usa "aiuda".`)
