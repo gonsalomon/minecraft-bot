@@ -34,7 +34,14 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
   }
 
   async function runDAG(defs, label, taskType = 'general') {
-    // Preflight survival check
+    // Dependency check — report ALL missing things before doing anything
+    const depIssues = checkDeps(taskType)
+    if (depIssues.length) {
+      sendMsg(`🚫 No puedo iniciar "${label}" — me falta:`)
+      for (const issue of depIssues) sendMsg(`  • ${issue}`)
+      return
+    }
+    // Survival preflight check
     if (survival) {
       const check = survival.preflightCheck(taskType)
       if (!check.ok) {
@@ -60,6 +67,126 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
       flags.dagRunning = false
       activeDAG = null
     }
+  }
+
+
+  // ── Dependency checker ────────────────────────────────────────
+  // Runs before every runDAG. Returns all missing things at once.
+  function checkDeps(taskType) {
+    const issues = []
+    const inv = bot.inventory.items()
+
+    const count = name => inv.filter(i => i.name === name).reduce((s,i) => s+i.count, 0)
+    const has   = name => inv.some(i => i.name === name)
+    const hasAny = (...names) => names.some(n => inv.some(i => i.name.includes(n)))
+
+    const hasPickaxe = hasAny('pickaxe')
+    const hasAxe     = hasAny('axe')
+    const hasWeapon  = hasAny('sword', 'axe')
+    const hasArmor   = [5,6,7,8].filter(s => bot.inventory.slots[s] != null).length >= 2
+    const hasTorches = count('torch') >= 8
+    const hasCoal    = has('coal') || has('charcoal')
+    const hasCobble  = count('cobblestone') >= 3
+    const hasSticks  = count('stick') >= 2
+    const hasFood    = inv.some(i => [
+      'cooked_beef','cooked_porkchop','cooked_mutton','cooked_chicken',
+      'cooked_salmon','cooked_cod','bread','golden_carrot','baked_potato',
+      'carrot','apple','melon_slice'
+    ].includes(i.name))
+    const canCraftPick = hasCobble && hasSticks
+
+    switch (taskType) {
+
+      case 'mining': {
+        if (!locations.mine)
+          issues.push('⛏️ No sé dónde está la mina → dime con: mina X Y Z')
+        if (!locations.chest)
+          issues.push('📦 No tengo dónde depositar → registra un cofre: cofre X Y Z')
+        if (!hasTorches) {
+          if (!hasCoal && !locations.chest)
+            issues.push('🕯️ No tengo antorchas ni carbón → registra un cofre con materiales: cofre X Y Z')
+          else if (!hasCoal)
+            issues.push('🕯️ No tengo carbón para antorchas → pon carbón en el cofre o en mi inventario')
+          if (locations.craftingTable == null)
+            issues.push('🔨 Necesito una mesa para craftear antorchas → registra una: mesa X Y Z')
+        }
+        if (!hasPickaxe) {
+          if (!canCraftPick && !locations.chest)
+            issues.push('⛏️ No tengo pico ni materiales → pon un pico en el cofre o registra uno: cofre X Y Z')
+          else if (!canCraftPick)
+            issues.push('⛏️ No tengo pico ni cobblestone + palos → pon materiales en el cofre')
+          if (!locations.craftingTable)
+            issues.push('🔨 Necesito una mesa para craftear el pico → registra una: mesa X Y Z')
+        }
+        if (bot.food < 18 && !hasFood) {
+          if (!locations.chest)
+            issues.push('🍗 Tengo hambre y no tengo comida → registra un cofre con comida: cofre X Y Z')
+          else
+            issues.push('🍗 Tengo hambre → pon comida en el cofre')
+        }
+        break
+      }
+
+      case 'lumberjack': {
+        if (!locations.chest)
+          issues.push('📦 No sé dónde depositar la madera → registra un cofre: cofre X Y Z')
+        if (!hasAxe) {
+          if (!hasCobble || !hasSticks)
+            issues.push('🪓 No tengo hacha ni materiales → pon una hacha en el inventario o cofre')
+          else if (!locations.craftingTable)
+            issues.push('🔨 Tengo materiales para el hacha pero necesito una mesa → registra una: mesa X Y Z')
+        }
+        break
+      }
+
+      case 'farming': {
+        if (!locations.farm)
+          issues.push('🌾 No sé dónde está la granja → dime con: granja X Y Z')
+        if (!locations.chest)
+          issues.push('📦 No tengo dónde depositar la cosecha → registra un cofre: cofre X Y Z')
+        break
+      }
+
+      case 'farming_bread': {
+        if (!locations.farm)
+          issues.push('🌾 No sé dónde está la granja → dime con: granja X Y Z')
+        if (!locations.craftingTable)
+          issues.push('🔨 Necesito una mesa para hacer pan → registra una: mesa X Y Z')
+        if (!locations.chest)
+          issues.push('📦 No tengo dónde depositar → registra un cofre: cofre X Y Z')
+        break
+      }
+
+      case 'combat': {
+        if (!hasWeapon)
+          issues.push('⚔️ No tengo arma → pon una espada o hacha en el inventario o cofre')
+        if (!hasArmor)
+          issues.push('🛡️ No tengo armadura suficiente → pon al menos peto + casco en inventario o cofre')
+        if (bot.food < 18 && !hasFood) {
+          if (!locations.chest)
+            issues.push('🍗 Tengo hambre y no tengo comida → registra un cofre con comida: cofre X Y Z')
+          else
+            issues.push('🍗 Tengo hambre → pon comida en el cofre')
+        }
+        if (!locations.chest)
+          issues.push('📦 No tengo dónde depositar el botín → registra un cofre: cofre X Y Z')
+        break
+      }
+
+      case 'sleep': {
+        if (!locations.bed && !locations.villageBed)
+          issues.push('🛏️ No sé dónde está la cama → dime con: cama X Y Z')
+        break
+      }
+
+      case 'trading': {
+        if (!locations.village && !locations.chest)
+          issues.push('🏘️ No conozco ninguna aldea → usa: busca aldea')
+        break
+      }
+    }
+
+    return issues
   }
 
   // ── Confirmation (for interactive mining) ────────────────────
@@ -260,17 +387,17 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
           { id: 'axe',  label: 'Asegurar hacha', deps: [],      fn: () => lumberjack.ensureAxe() },
           { id: 'cut',  label: `Cortar ${n} madera`, deps: ['axe'], fn: () => lumberjack.exploreCutUntil(n) },
           { id: 'dep',  label: 'Depositar',       deps: ['cut'], fn: () => inventory.depositInChest() },
-        ], `madera ×${n}`, 'farming')
+        ], `madera ×${n}`, 'lumberjack')
         break
       }
 
       // ── FARMING ──────────────────────────────────────────────
       case lower === 'cosecha':
-        runDAG([{ id: 'harvest', label: 'Cosechar', deps: [], fn: () => farming.harvestWheat() }], 'cosecha')
+        runDAG([{ id: 'harvest', label: 'Cosechar', deps: [], fn: () => farming.harvestWheat() }], 'cosecha', 'farming')
         break
 
       case lower === 'cocina':
-        runDAG([{ id: 'bread', label: 'Hacer pan', deps: [], fn: () => farming.makeBread() }], 'pan')
+        runDAG([{ id: 'bread', label: 'Hacer pan', deps: [], fn: () => farming.makeBread() }], 'pan', 'farming_bread')
         break
 
       case lower === 'cosecha y cocina':
@@ -278,7 +405,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
           { id: 'harvest', label: 'Cosechar',  deps: [],          fn: () => farming.harvestWheat() },
           { id: 'bread',   label: 'Pan',       deps: ['harvest'], fn: () => farming.makeBread() },
           { id: 'dep',     label: 'Depositar', deps: ['bread'],   fn: () => inventory.depositInChest() },
-        ], 'cosecha y cocina')
+        ], 'cosecha y cocina', 'farming_bread')
         break
 
       // ── COMBAT ───────────────────────────────────────────────
@@ -305,7 +432,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
       case lower === 'averiguar':
         runDAG([
           { id: 'investigate', label: 'Investigar aldeanos', deps: [], fn: () => trading.investigateAllVillagers() },
-        ], 'averiguar aldeanos')
+        ], 'averiguar aldeanos', 'trading')
         break
 
       // "ofertas" → read single nearest villager's trades
@@ -376,7 +503,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
         break
 
       case lower === 'dormi':
-        runDAG([{ id: 'sleep', label: 'Dormir', deps: [], fn: () => trading.sleepInBed() }], 'dormir')
+        runDAG([{ id: 'sleep', label: 'Dormir', deps: [], fn: () => trading.sleepInBed() }], 'dormir', 'sleep')
         break
 
       case cmd === 'agarra' && parts.length >= 2: {
@@ -448,7 +575,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
             deps: ['goto_player'],
             fn: () => movement.followUntilStopped(MASTER_USERNAME),
           },
-        ], 'seguir jugador')
+        ], 'seguir jugador', 'follow')
         break
       }
 
