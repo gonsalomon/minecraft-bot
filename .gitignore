@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+ 
+# Environment (contains credentials)
+.env
+ 
+# Runtime state (auto-generated, no need to track)
+state.json
+mining_state.json
+trader_state.json
+miner_state.json
+ 
+# Logs
+*.log
+npm-debug.log*
+ 
+# OS
+.DS_Store
+Thumbs.db
