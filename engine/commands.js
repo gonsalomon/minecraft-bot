@@ -35,7 +35,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
 
   async function runDAG(defs, label, taskType = 'general') {
     // Dependency check — report ALL missing things before doing anything
-    const depIssues = checkDeps(taskType)
+    const depIssues = await checkDeps(taskType)
     if (depIssues.length) {
       sendMsg(`🚫 No puedo iniciar "${label}" — me falta:`)
       for (const issue of depIssues) sendMsg(`  • ${issue}`)
@@ -72,27 +72,60 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
 
   // ── Dependency checker ────────────────────────────────────────
   // Runs before every runDAG. Returns all missing things at once.
-  function checkDeps(taskType) {
+  // async: peeks into the chest for items the bot doesn't carry yet.
+  async function checkDeps(taskType) {
     const issues = []
     const inv = bot.inventory.items()
 
-    const count = name => inv.filter(i => i.name === name).reduce((s,i) => s+i.count, 0)
-    const has   = name => inv.some(i => i.name === name)
-    const hasAny = (...names) => names.some(n => inv.some(i => i.name.includes(n)))
+    // Incluir mano (36) y offhand (45) — bot.inventory.items() no los devuelve
+    const heldSlots = [36, 45].map(s => bot.inventory.slots[s]).filter(Boolean)
+    const allItems  = [...inv, ...heldSlots]
+
+    const count    = name => allItems.filter(i => i.name === name).reduce((s,i) => s+i.count, 0)
+    const has      = name => allItems.some(i => i.name === name)
+    const hasAny   = (...names) => names.some(n => allItems.some(i => i.name.includes(n)))
+
+    // ── chest peek helpers (non-destructive: open, read, close) ──
+    let chestCache = null   // null = not peeked yet, [] = peeked but empty/failed
+    async function peekChest() {
+      if (!locations.chest) return []
+      if (chestCache !== null) return chestCache
+      try {
+        const Vec3 = require('vec3')
+        await movement.safeGoto(locations.chest.x, locations.chest.y, locations.chest.z, 2)
+        const block = bot.blockAt(new Vec3(locations.chest.x, locations.chest.y, locations.chest.z))
+        if (!block?.name.includes('chest')) { chestCache = []; return [] }
+        const chest = await bot.openChest(block)
+        chestCache = chest.containerItems()
+        chest.close()
+      } catch { chestCache = [] }
+      return chestCache
+    }
+    const chestHas    = async name => (await peekChest()).some(i => i.name === name)
+    const chestHasAny = async (...names) => {
+      const items = await peekChest()
+      return names.some(n => items.some(i => i.name.includes(n)))
+    }
+    const chestCount  = async name => (await peekChest()).filter(i => i.name === name).reduce((s,i) => s+i.count, 0)
+
+    // ── combined: inv OR chest ────────────────────────────────────
+    const haveAny   = async (...names) => hasAny(...names)   || await chestHasAny(...names)
+    const haveFood  = async () => {
+      const FOODS = ['cooked_beef','cooked_porkchop','cooked_mutton','cooked_chicken',
+        'cooked_salmon','cooked_cod','bread','golden_carrot','baked_potato',
+        'carrot','apple','melon_slice']
+      return inv.some(i => FOODS.includes(i.name)) || (await peekChest()).some(i => FOODS.includes(i.name))
+    }
+    const haveTorches = async () => count('torch') >= 8 || await chestCount('torch') >= 8
+    const haveCoal    = async () => has('coal') || has('charcoal') ||
+                                    await chestHas('coal') || await chestHas('charcoal')
 
     const hasPickaxe = hasAny('pickaxe')
     const hasAxe     = hasAny('axe')
     const hasWeapon  = hasAny('sword', 'axe')
     const hasArmor   = [5,6,7,8].filter(s => bot.inventory.slots[s] != null).length >= 2
-    const hasTorches = count('torch') >= 8
-    const hasCoal    = has('coal') || has('charcoal')
     const hasCobble  = count('cobblestone') >= 3
     const hasSticks  = count('stick') >= 2
-    const hasFood    = inv.some(i => [
-      'cooked_beef','cooked_porkchop','cooked_mutton','cooked_chicken',
-      'cooked_salmon','cooked_cod','bread','golden_carrot','baked_potato',
-      'carrot','apple','melon_slice'
-    ].includes(i.name))
     const canCraftPick = hasCobble && hasSticks
 
     switch (taskType) {
@@ -102,27 +135,23 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
           issues.push('⛏️ No sé dónde está la mina → dime con: mina X Y Z')
         if (!locations.chest)
           issues.push('📦 No tengo dónde depositar → registra un cofre: cofre X Y Z')
-        if (!hasTorches) {
-          if (!hasCoal && !locations.chest)
-            issues.push('🕯️ No tengo antorchas ni carbón → registra un cofre con materiales: cofre X Y Z')
-          else if (!hasCoal)
-            issues.push('🕯️ No tengo carbón para antorchas → pon carbón en el cofre o en mi inventario')
-          if (locations.craftingTable == null)
+        if (!await haveTorches()) {
+          if (!await haveCoal())
+            issues.push('🕯️ No tengo antorchas ni carbón (inventario ni cofre) → pon carbón en el cofre')
+          if (!locations.craftingTable)
             issues.push('🔨 Necesito una mesa para craftear antorchas → registra una: mesa X Y Z')
         }
-        if (!hasPickaxe) {
-          if (!canCraftPick && !locations.chest)
-            issues.push('⛏️ No tengo pico ni materiales → pon un pico en el cofre o registra uno: cofre X Y Z')
-          else if (!canCraftPick)
-            issues.push('⛏️ No tengo pico ni cobblestone + palos → pon materiales en el cofre')
+        if (!hasPickaxe && !await haveAny('pickaxe')) {
+          if (!canCraftPick)
+            issues.push('⛏️ No tengo pico ni materiales (inventario ni cofre) → pon un pico o cobblestone+palos en el cofre')
           if (!locations.craftingTable)
             issues.push('🔨 Necesito una mesa para craftear el pico → registra una: mesa X Y Z')
         }
-        if (bot.food < 18 && !hasFood) {
+        if (bot.food < 18 && !await haveFood()) {
           if (!locations.chest)
             issues.push('🍗 Tengo hambre y no tengo comida → registra un cofre con comida: cofre X Y Z')
           else
-            issues.push('🍗 Tengo hambre → pon comida en el cofre')
+            issues.push('🍗 Tengo hambre y no hay comida en el cofre → pon comida en el cofre')
         }
         break
       }
@@ -130,9 +159,9 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
       case 'lumberjack': {
         if (!locations.chest)
           issues.push('📦 No sé dónde depositar la madera → registra un cofre: cofre X Y Z')
-        if (!hasAxe) {
+        if (!hasAxe && !await haveAny('axe')) {
           if (!hasCobble || !hasSticks)
-            issues.push('🪓 No tengo hacha ni materiales → pon una hacha en el inventario o cofre')
+            issues.push('🪓 No tengo hacha ni materiales (inventario ni cofre) → pon una hacha en el cofre')
           else if (!locations.craftingTable)
             issues.push('🔨 Tengo materiales para el hacha pero necesito una mesa → registra una: mesa X Y Z')
         }
@@ -158,15 +187,15 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
       }
 
       case 'combat': {
-        if (!hasWeapon)
-          issues.push('⚔️ No tengo arma → pon una espada o hacha en el inventario o cofre')
-        if (!hasArmor)
-          issues.push('🛡️ No tengo armadura suficiente → pon al menos peto + casco en inventario o cofre')
-        if (bot.food < 18 && !hasFood) {
+        if (!hasWeapon && !await haveAny('sword', 'axe'))
+          issues.push('⚔️ No tengo arma (inventario ni cofre) → pon una espada o hacha en el cofre')
+        if (!hasArmor && !await chestHasAny('helmet','chestplate','leggings','boots'))
+          issues.push('🛡️ No tengo armadura suficiente (inventario ni cofre) → pon al menos peto + casco en el cofre')
+        if (bot.food < 18 && !await haveFood()) {
           if (!locations.chest)
             issues.push('🍗 Tengo hambre y no tengo comida → registra un cofre con comida: cofre X Y Z')
           else
-            issues.push('🍗 Tengo hambre → pon comida en el cofre')
+            issues.push('🍗 Tengo hambre y no hay comida en el cofre → pon comida en el cofre')
         }
         if (!locations.chest)
           issues.push('📦 No tengo dónde depositar el botín → registra un cofre: cofre X Y Z')
@@ -532,7 +561,7 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
 
       // ── HELP ─────────────────────────────────────────────────
       case lower === 'aiuda' || lower === 'help':
-        sendMsg('📋 salud | pos | data | debug | inv')
+        sendMsg('📋 salud | pos | data | debug | inv | supervivencia')
         sendMsg('🏠 cofre/mesa/mina/granja/cama x y z')
         sendMsg('🚶 ir a x y z | seguime | quieto | basta')
         sendMsg('⛏️ minar <bloque> | minar chunk [completo] | minar capa <Y>')
@@ -540,9 +569,9 @@ function createCommandHandler(bot, { movement, inventory, miningSkills, lumberja
         sendMsg('🌲 explora [n] | madera [n]')
         sendMsg('🌾 cosecha | cocina | cosecha y cocina')
         sendMsg('⚔️ caza | vestite | come | deposita | dormi')
+        sendMsg('📦 agarra <item> | dropea todo | esquiva | no esquives')
         sendMsg('🏘️ busca aldea | averiguar | ofertas [profesion] | trades [n] | entidades')
         break
-
 
       // ── FIND & FOLLOW PLAYER (DAG) ───────────────────────────
       // "encuentra"  → locate player, go to them, follow until "basta"

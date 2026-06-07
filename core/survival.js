@@ -317,28 +317,30 @@ function createSurvival(bot, movement, inventory, getActiveDAG, sendMsg) {
    * Returns { ok: true } or { ok: false, reason: string }
    */
   function preflightCheck(taskType = 'general') {
-    const reqs  = TASK_REQUIREMENTS[taskType]
-    if (!reqs) return { ok: true }
+  const reqs = TASK_REQUIREMENTS[taskType]
+  if (!reqs) return { ok: true }
 
-    const issues = []
+  const issues = []
 
-    if (reqs.minFood   && bot.food   < reqs.minFood)   issues.push(`🍗 Hambre: ${Math.round(bot.food)}/20 (mínimo ${reqs.minFood})`)
-    if (reqs.minHealth && bot.health < reqs.minHealth)  issues.push(`❤️ Vida: ${Math.round(bot.health)}/20 (mínimo ${reqs.minHealth})`)
-    if (reqs.needsWeapon && !hasWeaponEquipped())       issues.push('⚔️ Sin arma equipada')
-    if (reqs.needsArmor  && !hasArmorOn())              issues.push('🛡️ Sin armadura')
-    if (reqs.needsPickaxe) {
-      const pick = bot.inventory.slots[36]
-      if (!pick?.name.includes('pickaxe')) issues.push('⛏️ Sin pico equipado')
-    }
+  // Incluir mano (36) y offhand (45)
+  const heldSlots = [36, 45].map(s => bot.inventory.slots[s]).filter(Boolean)
+  const allItems  = [...bot.inventory.items(), ...heldSlots]
+  const hasItem   = name => allItems.some(i => i.name.includes(name))
 
-    const environmental = assessThreat()
-    if (environmental.level >= THREAT.THREATENED) {
-      issues.push(`⚠️ Amenaza activa: ${environmental.reasons.join(', ')}`)
-    }
+  if (reqs.minFood   && bot.food   < reqs.minFood)   issues.push(`🍗 Hambre: ${Math.round(bot.food)}/20 (mínimo ${reqs.minFood})`)
+  if (reqs.minHealth && bot.health < reqs.minHealth)  issues.push(`❤️ Vida: ${Math.round(bot.health)}/20 (mínimo ${reqs.minHealth})`)
+  if (reqs.needsWeapon && !hasItem('sword') && !hasItem('axe')) issues.push('⚔️ Sin arma equipada')
+  if (reqs.needsArmor  && [5,6,7,8].filter(s => bot.inventory.slots[s] != null).length < 2) issues.push('🛡️ Sin armadura')
+  if (reqs.needsPickaxe && !hasItem('pickaxe'))       issues.push('⛏️ Sin pico equipado')
 
-    if (issues.length) return { ok: false, reason: issues.join(' | ') }
-    return { ok: true }
+  const environmental = assessThreat()
+  if (environmental.level >= THREAT.THREATENED) {
+    issues.push(`⚠️ Amenaza activa: ${environmental.reasons.join(', ')}`)
   }
+
+  if (issues.length) return { ok: false, reason: issues.join(' | ') }
+  return { ok: true }
+}
 
   // ── Public API ────────────────────────────────────────────────
 

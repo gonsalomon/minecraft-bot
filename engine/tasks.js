@@ -35,7 +35,7 @@ function mineBlock(skills, blockName) {
     {
       id: 'descend',
       label: 'Bajar a capa óptima',
-      deps: ['goto_mine', 'ensure_torches'],
+      deps: ['goto_mine'],
       fn: () => skills.descendToOptimalY(blockName),
     },
     {

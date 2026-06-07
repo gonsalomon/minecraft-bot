@@ -170,19 +170,23 @@ function createMining(bot, movement, inventory) {
 
   // ── Pickaxe management ───────────────────────────────────────
   async function ensurePickaxeForBlock(blockName) {
-    const required = PICKAXE_REQUIRED[blockName] || 'wooden_pickaxe'
-    const requiredTier = PICKAXE_TIER[required]
-    const equipped = bot.inventory.slots[36]
+  const required    = PICKAXE_REQUIRED[blockName] || 'stone_pickaxe'
+  const requiredTier = PICKAXE_TIER[required]
 
-    if (equipped?.name.includes('pickaxe') && (PICKAXE_TIER[equipped.name] || 0) >= requiredTier) return true
+  // Incluir mano (36) y offhand (45)
+  const heldSlots = [36, 45].map(s => bot.inventory.slots[s]).filter(Boolean)
+  const allItems  = [...bot.inventory.items(), ...heldSlots]
 
-    const suitable = bot.inventory.items()
-      .filter(i => i.name.includes('pickaxe') && (PICKAXE_TIER[i.name] || 0) >= requiredTier)
-      .sort((a,b) => (PICKAXE_TIER[b.name]||0) - (PICKAXE_TIER[a.name]||0))[0]
+  const equipped = bot.inventory.slots[36]
+  if (equipped?.name.includes('pickaxe') && (PICKAXE_TIER[equipped.name] || 0) >= requiredTier) return true
 
-    if (suitable) { await bot.equip(suitable, 'hand'); return true }
-    return false
-  }
+  const suitable = allItems
+    .filter(i => i.name.includes('pickaxe') && (PICKAXE_TIER[i.name] || 0) >= requiredTier)
+    .sort((a, b) => (PICKAXE_TIER[b.name] || 0) - (PICKAXE_TIER[a.name] || 0))[0]
+
+  if (suitable) { await bot.equip(suitable, 'hand'); return true }
+  return false
+}
 
   async function ensurePickaxe(blockName) {
     if (await ensurePickaxeForBlock(blockName)) return true
@@ -290,41 +294,48 @@ function createMining(bot, movement, inventory) {
   }
 
   // ── Serpentine layer (from bot_minero.js) ────────────────────
-  async function mineLayerSerpentine(baseX, baseZ, y) {
-    let x = baseX
-    let z = baseZ
-    let dx = 1
-
+  async function mineLayerSerpentine(baseX, baseZ, bottomY) {
     for (let row = 0; row < 16; row++) {
-      const endX = dx === 1 ? baseX + 15 : baseX
-      while (x !== endX + dx) {
-        if (!flags.miningActive) return
-        const block = bot.blockAt(new Vec3(x, y, z))
-        if (block && block.diggable && !PROTECTED_BLOCKS.has(block.name) && !hasLavaNearby(block.position)) {
-          if (Math.abs(bot.entity.position.x - x) > 1 || Math.abs(bot.entity.position.z - z) > 1) {
-            await safeGoto(x, y, z, 1)
-          }
-          await safeDig(block)
-          await placeTorchIfNeeded()
-          await bot.waitForTicks(1)
-        }
-        x += dx
-      }
       if (!flags.miningActive) return
-      z++
-      dx = -dx
-      x = dx === 1 ? baseX : baseX + 15
+      const z      = baseZ + row
+      const startX = row % 2 === 0 ? baseX : baseX + 15
+      const endX   = row % 2 === 0 ? baseX + 15 : baseX
+      const dx     = row % 2 === 0 ? 1 : -1
+
+      // Ir al inicio de la fila (capa inferior)
+      await safeGoto(startX, bottomY, z, 1)
+
+      for (let x = startX; x !== endX + dx; x += dx) {
+        if (!flags.miningActive) return
+
+        // Minar ambas capas en la misma columna antes de avanzar
+        for (const yy of [bottomY, bottomY + 1]) {
+          const block = bot.blockAt(new Vec3(x, yy, z))
+          if (!block || !block.diggable || PROTECTED_BLOCKS.has(block.name) || hasLavaNearby(block.position)) continue
+          try { await bot.dig(block, true) } catch (err) {
+            const msg = err.message ?? ''
+            if (!msg.includes('air') && !msg.includes('already') && !msg.includes('GoalChanged'))
+              console.log(`[Mining] dig skipped: ${msg}`)
+          }
+        }
+
+        await placeTorchIfNeeded()
+        await bot.waitForTicks(2)
+
+        // Avanzar al siguiente bloque de la fila
+        const nextX = x + dx
+        if (nextX !== endX + dx) {
+          await safeGoto(nextX, bottomY, z, 1)
+        }
+      }
     }
   }
 
   async function mineTwoLayers(chunkX, chunkZ, bottomY) {
-    const startX = chunkX * 16
-    const startZ = chunkZ * 16
-    await mineLayerSerpentine(startX, startZ, bottomY)
-    if (flags.miningActive) {
-      await mineLayerSerpentine(startX, startZ, bottomY + 1)
-    }
-  }
+  const startX = chunkX * 16
+  const startZ = chunkZ * 16
+  await mineLayerSerpentine(startX, startZ, bottomY)
+}
 
   // ── Full chunk mining (from bot_minero.js) ────────────────────
 
